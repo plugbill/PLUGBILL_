@@ -62,9 +62,9 @@ jobs:
           AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
           # ---- APK: package, SDK levels, not debuggable
           "$AAPT2" dump badging "$APK" > badging.txt
-          grep -E "^package:|^sdkVersion|^targetSdkVersion|application-debuggable" badging.txt || true
+          grep -E "^package:|dkVersion|application-debuggable" badging.txt || true
           grep -q "name='com.plugbill.linexware.app'" badging.txt || { echo "::error::Wrong package name"; exit 1; }
-          grep -q "^sdkVersion:'24'" badging.txt || { echo "::error::APK minSdk is not 24 (Android 7)"; exit 1; }
+          grep -qE "^(sdkVersion|minSdkVersion):'24'" badging.txt || { echo "::error::APK minSdk is not 24 (Android 7)"; exit 1; }
           TARGET=$(grep "^targetSdkVersion" badging.txt | sed "s/[^0-9]//g")
           [ "$TARGET" -ge 36 ] || { echo "::error::APK targetSdk is $TARGET, Play needs 36+"; exit 1; }
           ! grep -q "application-debuggable" badging.txt || { echo "::error::APK is debuggable - Play rejects this"; exit 1; }
@@ -98,3 +98,22 @@ jobs:
         with:
           name: PlugBill-mapping
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/mapping/release/mapping.txt
+argetSdk is $TGTSDK, Play needs 36+"; exit 1; }
+          DEBUGGABLE=$(java -jar bundletool.jar dump manifest --bundle="$AAB" --xpath=/manifest/application/@android:debuggable 2>/dev/null || true)
+          [ "$DEBUGGABLE" != "true" ] || { echo "::error::AAB is debuggable - Play rejects this"; exit 1; }
+          jarsigner -verify "$AAB" | head -3
+          echo "All Play Store checks passed."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlugBill-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/release/*.apk
+
+      - name: Upload AAB (for Google Play)
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlugBill-AAB-for-PlayStore
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/bundle/release/*.aab
+
+      - name: Upload R8 mapping (deo
