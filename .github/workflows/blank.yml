@@ -35,6 +35,40 @@ jobs:
         with:
           gradle-version: 8.11.1
 
+      - name: Pin the server certificate (root CA) into the app
+        working-directory: ${{ env.PROJECT_DIR }}
+        continue-on-error: true   # if anything here fails the build simply has no pin (the encrypted channel still protects traffic)
+        run: |
+          HOST=plugbill.linexware.net.ng
+          [ "${{ vars.PIN_TLS }}" = "off" ] && { echo "Pinning switched off by repository variable PIN_TLS=off"; exit 0; }
+          openssl s_client -connect $HOST:443 -servername $HOST -showcerts </dev/null 2>/dev/null > chain.txt
+          python3 - <<'PY'
+          import re,subprocess,hashlib,base64,datetime,os
+          txt=open('chain.txt').read()
+          certs=re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',txt,re.S)
+          if not certs: raise SystemExit('no certificates fetched; building without a pin')
+          def pin(pem):
+              pub=subprocess.run(['openssl','x509','-pubkey','-noout'],input=pem.encode(),capture_output=True,check=True).stdout
+              der=subprocess.run(['openssl','pkey','-pubin','-outform','der'],input=pub,capture_output=True,check=True).stdout
+              return base64.b64encode(hashlib.sha256(der).digest()).decode()
+          pins=[pin(c) for c in certs[1:]]   # intermediates (leaf excluded: it renews every few months)
+          # root that issued the last certificate sent, taken from the runner's trust store
+          last=certs[-1]
+          h=subprocess.run(['openssl','x509','-noout','-issuer_hash'],input=last.encode(),capture_output=True).stdout.decode().strip()
+          rootf='/etc/ssl/certs/%s.0'%h
+          if os.path.exists(rootf):
+              pins.append(pin(open(rootf).read()))
+          pins=sorted(set(pins))
+          if not pins: raise SystemExit('no CA pins found; building without a pin')
+          roots=[p for p in pins]
+          exp=(datetime.date.today()+datetime.timedelta(days=180)).isoformat()
+          xml='<?xml version="1.0" encoding="utf-8"?>\n<network-security-config>\n  <base-config cleartextTrafficPermitted="false">\n    <trust-anchors><certificates src="system" /></trust-anchors>\n  </base-config>\n  <domain-config cleartextTrafficPermitted="false">\n    <domain includeSubdomains="false">plugbill.linexware.net.ng</domain>\n    <pin-set expiration="%s">\n'%exp
+          for p in roots: xml+='      <pin digest="SHA-256">%s</pin>\n'%p
+          xml+='    </pin-set>\n  </domain-config>\n</network-security-config>\n'
+          open('app/src/main/res/xml/network_security_config.xml','w').write(xml)
+          print(xml)
+          PY
+
       - name: Build signed APK and AAB
         working-directory: ${{ env.PROJECT_DIR }}
         run: gradle assembleRelease bundleRelease --no-daemon
@@ -98,3 +132,7 @@ jobs:
         with:
           name: PlugBill-mapping
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/mapping/release/mapping.txt
+argetSdk is $TGTSDK, Play needs 36+"; exit 1; }
+          DEBUGGABLE=$(java -jar bundletool.jar dump manifest --bundle="$AAB" --xpath=/manifest/application/@android:debuggable 2>/dev/null || true)
+          [ "$DEBUGGABLE" != "true" ] || { echo "::error::AAB is debuggable - Play rejects this"; exit 1; }
+        
